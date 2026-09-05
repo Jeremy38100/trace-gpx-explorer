@@ -126,6 +126,22 @@ const smoothingOptions: Array<{ value: SmoothingPeriod; label: string }> = [
   { value: 300, label: '5 min' },
   { value: 600, label: '10 min' },
 ];
+const chartPointLimits = [500, 1000, 2000, 5000, 10000] as const;
+const chartPointLimitStorageKey = 'trace:chart-max-points';
+type ChartPointLimit = (typeof chartPointLimits)[number];
+
+function getStoredChartPointLimit(): ChartPointLimit {
+  try {
+    const value = Number(
+      window.localStorage.getItem(chartPointLimitStorageKey),
+    );
+    return chartPointLimits.includes(value as ChartPointLimit)
+      ? (value as ChartPointLimit)
+      : 1000;
+  } catch {
+    return 1000;
+  }
+}
 
 function formatSmoothingValue(value: unknown) {
   if (value === 'none') return 'No smoothing';
@@ -579,6 +595,9 @@ export function GpxExplorer() {
   const [segmentOpen, setSegmentOpen] = useState(true);
   const [smoothEnabled, setSmoothEnabled] = useState(false);
   const [smoothingPeriod, setSmoothingPeriod] = useState<SmoothingPeriod>(30);
+  const [chartPointLimit, setChartPointLimit] = useState<ChartPointLimit>(
+    getStoredChartPointLimit,
+  );
   const [dataChartHeight, setDataChartHeight] =
     useState<DataChartHeight>('medium');
   const [mapSmoothingPeriod, setMapSmoothingPeriod] = useState<
@@ -739,8 +758,11 @@ export function GpxExplorer() {
       heartrate: smoothed ? smoothed[index].heartrate : point.heartrate,
       point,
     }));
-    return sample(rows);
-  }, [segmentPoints, smoothEnabled, smoothingPeriod, xMode]);
+    return sample(rows, chartPointLimit);
+  }, [chartPointLimit, segmentPoints, smoothEnabled, smoothingPeriod, xMode]);
+  const activeSmoothingLabel = smoothEnabled
+    ? formatSmoothingValue(smoothingPeriod)
+    : null;
   const scatterData = useMemo(
     () =>
       chartData
@@ -937,6 +959,17 @@ export function GpxExplorer() {
         ? current.filter((item) => item !== metric)
         : [...current, metric],
     );
+  };
+  const updateChartPointLimit = (value: string | null) => {
+    if (value === null) return;
+    const limit = Number(value) as ChartPointLimit;
+    if (!chartPointLimits.includes(limit)) return;
+    setChartPointLimit(limit);
+    try {
+      window.localStorage.setItem(chartPointLimitStorageKey, String(limit));
+    } catch {
+      // The selected limit still applies when storage is unavailable.
+    }
   };
   const saveSegment = () => {
     if (!activity || !segmentName.trim()) return;
@@ -1386,6 +1419,143 @@ export function GpxExplorer() {
                   </div>
 
                   <div className="min-w-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
+                    <section className="sticky top-0 z-20 mb-5 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+                      <div className="flex w-full flex-wrap items-end gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label
+                            htmlFor="smooth-data"
+                            className="cursor-pointer text-[11px] font-semibold whitespace-nowrap"
+                          >
+                            Smooth data
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <ControlTooltip content="Apply a rolling average to the data charts">
+                              <Checkbox
+                                id="smooth-data"
+                                checked={smoothEnabled}
+                                onCheckedChange={(checked) =>
+                                  setSmoothEnabled(checked)
+                                }
+                              />
+                            </ControlTooltip>
+                            <Select
+                              value={String(smoothingPeriod)}
+                              onValueChange={(value) =>
+                                setSmoothingPeriod(
+                                  Number(value) as SmoothingPeriod,
+                                )
+                              }
+                            >
+                              <SelectTrigger
+                                aria-label="Smoothing period"
+                                disabled={!smoothEnabled}
+                                className="h-7 w-[88px] border bg-secondary px-2 text-xs"
+                              >
+                                <SelectValue>
+                                  {formatSmoothingValue}
+                                </SelectValue>
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                {smoothingOptions.map((option) => (
+                                  <SelectItem
+                                    key={option.value}
+                                    value={String(option.value)}
+                                  >
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label
+                            htmlFor="data-chart-height"
+                            className="text-[11px] font-semibold whitespace-nowrap"
+                          >
+                            Chart height
+                          </label>
+                          <Select
+                            value={dataChartHeight}
+                            onValueChange={(value) =>
+                              setDataChartHeight(value as DataChartHeight)
+                            }
+                          >
+                            <SelectTrigger
+                              id="data-chart-height"
+                              aria-label="Data chart height"
+                              className="h-7 w-[98px] border bg-secondary px-2 text-xs"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                              {dataChartHeightOptions.map((option) => (
+                                <SelectItem
+                                  key={option.value}
+                                  value={option.value}
+                                >
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label
+                            htmlFor="chart-point-limit"
+                            className="text-[11px] font-semibold whitespace-nowrap"
+                          >
+                            Max chart points
+                          </label>
+                          <Select
+                            value={String(chartPointLimit)}
+                            onValueChange={updateChartPointLimit}
+                          >
+                            <SelectTrigger
+                              id="chart-point-limit"
+                              aria-label="Maximum chart points"
+                              className="h-7 w-[88px] border bg-secondary px-2 text-xs"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                              {chartPointLimits.map((limit) => (
+                                <SelectItem key={limit} value={String(limit)}>
+                                  {limit.toLocaleString()}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[11px] font-semibold whitespace-nowrap">
+                            X axis
+                          </span>
+                          <Select
+                            value={xMode}
+                            onValueChange={(value) =>
+                              setXMode(value as XAxisMode)
+                            }
+                          >
+                            <SelectTrigger
+                              aria-label="Chart horizontal axis"
+                              className="h-7 w-[88px] border bg-secondary px-2 text-xs"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                              <SelectItem value="distance">Distance</SelectItem>
+                              <SelectItem
+                                value="time"
+                                disabled={activity.duration === null}
+                              >
+                                Time
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </section>
                     {segmentOpen ? (
                       <section className="rounded-md border border-border bg-card p-4 sm:p-5">
                         <div className="flex items-start justify-between gap-3">
@@ -1615,7 +1785,7 @@ export function GpxExplorer() {
                     )}
 
                     <section className="mt-5 rounded-md border border-border bg-card p-4 sm:p-5">
-                      <div className="flex flex-col gap-4">
+                      <div>
                         <div>
                           <div className="flex items-center gap-2 text-sm font-semibold">
                             <ChartNoAxesCombined className="size-4 text-primary" />{' '}
@@ -1625,116 +1795,6 @@ export function GpxExplorer() {
                             Each scale adjusts to the selected segment.
                             Horizontal values always start at zero.
                           </p>
-                        </div>
-                        <div className="flex w-full flex-wrap items-end gap-3">
-                          <div className="flex flex-col gap-1">
-                            <label
-                              htmlFor="smooth-data"
-                              className="cursor-pointer text-[11px] font-semibold whitespace-nowrap"
-                            >
-                              Smooth data
-                            </label>
-                            <div className="flex items-center gap-2">
-                              <ControlTooltip content="Apply a rolling average to the data charts">
-                                <Checkbox
-                                  id="smooth-data"
-                                  checked={smoothEnabled}
-                                  onCheckedChange={(checked) =>
-                                    setSmoothEnabled(checked)
-                                  }
-                                />
-                              </ControlTooltip>
-                              <Select
-                                value={String(smoothingPeriod)}
-                                onValueChange={(value) =>
-                                  setSmoothingPeriod(
-                                    Number(value) as SmoothingPeriod,
-                                  )
-                                }
-                              >
-                                <SelectTrigger
-                                  aria-label="Smoothing period"
-                                  disabled={!smoothEnabled}
-                                  className="h-7 w-32 border bg-secondary px-2 text-xs"
-                                >
-                                  <SelectValue>
-                                    {formatSmoothingValue}
-                                  </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent align="end">
-                                  {smoothingOptions.map((option) => (
-                                    <SelectItem
-                                      key={option.value}
-                                      value={String(option.value)}
-                                    >
-                                      {option.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label
-                              htmlFor="data-chart-height"
-                              className="text-[11px] font-semibold whitespace-nowrap"
-                            >
-                              Chart height
-                            </label>
-                            <Select
-                              value={dataChartHeight}
-                              onValueChange={(value) =>
-                                setDataChartHeight(value as DataChartHeight)
-                              }
-                            >
-                              <SelectTrigger
-                                id="data-chart-height"
-                                aria-label="Data chart height"
-                                className="h-7 w-32 border bg-secondary px-2 text-xs"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent align="end">
-                                {dataChartHeightOptions.map((option) => (
-                                  <SelectItem
-                                    key={option.value}
-                                    value={option.value}
-                                  >
-                                    {option.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[11px] font-semibold whitespace-nowrap">
-                              X axis
-                            </span>
-                            <Select
-                              value={xMode}
-                              onValueChange={(value) =>
-                                setXMode(value as XAxisMode)
-                              }
-                            >
-                              <SelectTrigger
-                                aria-label="Chart horizontal axis"
-                                className="h-7 w-32 border bg-secondary px-2 text-xs"
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent align="end">
-                                <SelectItem value="distance">
-                                  Distance
-                                </SelectItem>
-                                <SelectItem
-                                  value="time"
-                                  disabled={activity.duration === null}
-                                >
-                                  Time
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
                         </div>
                       </div>
                       <div
@@ -1788,7 +1848,7 @@ export function GpxExplorer() {
                                 key={metric}
                                 className="rounded-md border bg-background/65 p-3 sm:p-4"
                               >
-                                <div className="mb-2 flex items-baseline justify-between">
+                                <div className="mb-2 flex items-baseline justify-between gap-2">
                                   <h3 className="flex items-center gap-1.5 text-sm font-semibold">
                                     <span
                                       className="size-1.5 rounded-full"
@@ -1799,9 +1859,16 @@ export function GpxExplorer() {
                                     />
                                     {metricConfig[metric].label}
                                   </h3>
-                                  <span className="font-mono text-[10px] text-muted-foreground">
-                                    {metricConfig[metric].unit}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    {activeSmoothingLabel ? (
+                                      <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                        Smoothed: {activeSmoothingLabel}
+                                      </span>
+                                    ) : null}
+                                    <span className="font-mono text-[10px] text-muted-foreground">
+                                      {metricConfig[metric].unit}
+                                    </span>
+                                  </div>
                                 </div>
                                 <MetricHighchart
                                   metric={metric}
@@ -1937,14 +2004,21 @@ export function GpxExplorer() {
                       </div>
                       {scatterData.length ? (
                         <div className="mt-5 rounded-md border bg-background/65 p-3 sm:p-4">
-                          <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                          <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
                             <span>
                               {metricConfig[scatterYMetric].label} vs.{' '}
                               {metricConfig[scatterXMetric].label}
                             </span>
-                            <span className="font-mono">
-                              {scatterData.length} points
-                            </span>
+                            <div className="flex items-center gap-2">
+                              {activeSmoothingLabel ? (
+                                <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                  Smoothed: {activeSmoothingLabel}
+                                </span>
+                              ) : null}
+                              <span className="font-mono">
+                                {scatterData.length} points
+                              </span>
+                            </div>
                           </div>
                           <RelationshipHighchart
                             xMetric={scatterXMetric}
