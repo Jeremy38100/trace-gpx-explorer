@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Trace GPX Explorer" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Trace demo ride</name>
+  </metadata>
+  <trk>
+    <name>Trace demo ride</name>
+    <type>cycling</type>
+    <trkseg>
+      <trkpt lat="40.71280" lon="-74.00600">
+        <ele>12</ele>
+        <time>2025-01-01T10:00:00Z</time>
+        <extensions><hr>118</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71320" lon="-74.00520">
+        <ele>14</ele>
+        <time>2025-01-01T10:01:00Z</time>
+        <extensions><hr>122</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71380" lon="-74.00440">
+        <ele>18</ele>
+        <time>2025-01-01T10:02:00Z</time>
+        <extensions><hr>126</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71430" lon="-74.00340">
+        <ele>23</ele>
+        <time>2025-01-01T10:03:00Z</time>
+        <extensions><hr>131</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71470" lon="-74.00230">
+        <ele>21</ele>
+        <time>2025-01-01T10:04:00Z</time>
+        <extensions><hr>128</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71510" lon="-74.00120">
+        <ele>25</ele>
+        <time>2025-01-01T10:05:00Z</time>
+        <extensions><hr>134</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71560" lon="-74.00030">
+        <ele>29</ele>
+        <time>2025-01-01T10:06:00Z</time>
+        <extensions><hr>137</hr></extensions>
+      </trkpt>
+      <trkpt lat="40.71610" lon="-73.99950">
+        <ele>27</ele>
+        <time>2025-01-01T10:07:00Z</time>
+        <extensions><hr>133</hr></extensions>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

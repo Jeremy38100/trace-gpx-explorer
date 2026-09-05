@@ -1,0 +1,124 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+@import 'leaflet/dist/leaflet.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-roboto);
+  --font-mono: var(--font-roboto);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --radius-sm: calc(var(--radius) * 0.65);
+  --radius-md: calc(var(--radius) * 0.82);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.45);
+  --radius-2xl: calc(var(--radius) * 1.85);
+}
+
+:root {
+  --background: #fafafa;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #27272a;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #27272a;
+  --destructive: #dc2626;
+  --border: #e4e4e7;
+  --input: #d4d4d8;
+  --ring: #a1a1aa;
+  --radius: 0.375rem;
+}
+
+.dark {
+  --background: #111713;
+  --foreground: #f4f5ef;
+  --card: #182019;
+  --card-foreground: #f4f5ef;
+  --popover: #182019;
+  --popover-foreground: #f4f5ef;
+  --primary: #f36b3f;
+  --primary-foreground: #1c110d;
+  --secondary: #242d26;
+  --secondary-foreground: #edf0e9;
+  --muted: #242d26;
+  --muted-foreground: #a7b0a8;
+  --accent: #243b2c;
+  --accent-foreground: #e9f4eb;
+  --destructive: #ff746b;
+  --border: #303b32;
+  --input: #39463b;
+  --ring: #f36b3f;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-roboto), Arial, sans-serif;
+  }
+  .font-mono {
+    font-family: var(--font-roboto), Arial, sans-serif;
+  }
+  button,
+  label {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.leaflet-container {
+  background: #f4f4f5;
+  font-family: var(--font-roboto), Arial, sans-serif;
+}
+.leaflet-control-attribution {
+  border-radius: 4px 0 0 0;
+  font-size: 9px !important;
+}
+.leaflet-control-zoom a {
+  color: #171717 !important;
+}
+.leaflet-tooltip.route-value-tooltip {
+  border: 1px solid #e4e4e7;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #171717;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 7px 9px;
+}
+
+.drop-active {
+  outline: 2px solid #171717;
+  outline-offset: -8px;
+}
