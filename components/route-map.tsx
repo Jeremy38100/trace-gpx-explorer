@@ -402,7 +402,7 @@ export function RouteMap({
         `<span style="display:grid;place-items:center;width:22px;height:22px;border-radius:4px;background:${color};color:white;border:2px solid white;font:700 9px system-ui">${label}</span>`;
       L.marker(positions[0], {
         icon: L.divIcon({
-          html: markerHtml('S', '#71717a'),
+          html: markerHtml('S', '#66bb6a'),
           className: '',
           iconSize: [22, 22],
           iconAnchor: [11, 11],
@@ -410,7 +410,7 @@ export function RouteMap({
       }).addTo(group);
       L.marker(positions.at(-1)!, {
         icon: L.divIcon({
-          html: markerHtml('E', '#171717'),
+          html: markerHtml('E', '#ff4d4e'),
           className: '',
           iconSize: [22, 22],
           iconAnchor: [11, 11],

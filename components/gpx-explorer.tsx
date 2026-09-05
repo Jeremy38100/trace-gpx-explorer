@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -8,11 +9,14 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type ReactElement,
 } from 'react';
 import {
   Activity,
+  ArrowLeftRight,
   Bike,
   Bookmark,
+  CalendarDays,
   ChartNoAxesCombined,
   ChartScatter,
   Clock3,
@@ -24,8 +28,8 @@ import {
   Map as MapIcon,
   Minus,
   Mountain,
-  PanelRightClose,
-  PanelRightOpen,
+  PanelTopClose,
+  PanelTopOpen,
   Plus,
   Route,
   Save,
@@ -45,6 +49,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   metricValue,
   parseGpx,
@@ -100,6 +110,14 @@ const metricConfig: Record<
 };
 
 const metricKeys = Object.keys(metricConfig) as MetricKey[];
+const metricIcons = {
+  distance: Route,
+  elevation: Mountain,
+  speed: Gauge,
+  verticalSpeed: Activity,
+  grade: ChartNoAxesCombined,
+  heartrate: HeartPulse,
+};
 const smoothingOptions: Array<{ value: SmoothingPeriod; label: string }> = [
   { value: 15, label: '15 sec' },
   { value: 30, label: '30 sec' },
@@ -108,6 +126,15 @@ const smoothingOptions: Array<{ value: SmoothingPeriod; label: string }> = [
   { value: 300, label: '5 min' },
   { value: 600, label: '10 min' },
 ];
+
+function formatSmoothingValue(value: unknown) {
+  if (value === 'none') return 'No smoothing';
+  return (
+    smoothingOptions.find((option) => String(option.value) === value)?.label ??
+    'Smoothing'
+  );
+}
+
 const dataChartHeightOptions: Array<{
   value: DataChartHeight;
   label: string;
@@ -192,6 +219,21 @@ function getSegmentSummary(points: TrackPoint[]) {
   };
 }
 
+function closestPointIndex(points: TrackPoint[], distance: number) {
+  let low = 0;
+  let high = points.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (points[middle].distance < distance) low = middle + 1;
+    else high = middle;
+  }
+  if (!low) return 0;
+  return Math.abs(points[low - 1].distance - distance) <=
+    Math.abs(points[low].distance - distance)
+    ? low - 1
+    : low;
+}
+
 const highchartsBase: Highcharts.Options = {
   accessibility: { enabled: false },
   chart: {
@@ -203,23 +245,66 @@ const highchartsBase: Highcharts.Options = {
   legend: { enabled: false },
   title: { text: undefined },
 };
+function MetricIcon({
+  metric,
+  className,
+  style,
+}: {
+  metric: MetricKey;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const Icon = metricIcons[metric];
+  return <Icon className={className} style={style} />;
+}
 
-function MetricHighchart({
+function ControlTooltip({
+  content,
+  children,
+}: {
+  content: string;
+  children: ReactElement;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={children} />
+      <TooltipContent>{content}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+const MetricHighchart = memo(function MetricHighchart({
   metric,
   data,
-  domain,
   xMode,
   height,
   onPointHover,
 }: {
   metric: MetricKey;
-  data: Array<{ x: number; y: number | null | undefined; point: TrackPoint }>;
-  domain: [number, number];
+  data: Array<
+    { x: number; point: TrackPoint } & Partial<Record<MetricKey, number | null>>
+  >;
   xMode: XAxisMode;
   height: number;
   onPointHover: (point: TrackPoint | null) => void;
 }) {
   const config = metricConfig[metric];
+  const values = data
+    .map((item) => item[metric])
+    .filter(
+      (value): value is number =>
+        typeof value === 'number' && Number.isFinite(value),
+    );
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
+  const margin = Math.max(
+    (max - min) * 0.08,
+    metricConfig[metric].fallbackMargin,
+  );
+  const domain: [number, number] = [
+    Math.floor((min - margin) * 10) / 10,
+    Math.ceil((max + margin) * 10) / 10,
+  ];
   const options: Highcharts.Options = {
     ...highchartsBase,
     chart: {
@@ -288,21 +373,23 @@ function MetricHighchart({
         color: config.color,
         data: data.map((item) => ({
           x: item.x,
-          y: item.y,
+          y: item[metric],
           custom: { trackPoint: item.point },
         })),
       },
     ],
   };
   return <HighchartsReact highcharts={Highcharts} options={options} />;
-}
+});
 
-function ElevationHighchart({
+const ElevationHighchart = memo(function ElevationHighchart({
   data,
   selectionDistances,
+  onPlotBoundsChange,
 }: {
   data: Array<{ distance: number; elevation: number | null }>;
   selectionDistances: number[];
+  onPlotBoundsChange: (chart: Highcharts.Chart) => void;
 }) {
   const color = metricConfig.elevation.color;
   const options: Highcharts.Options = {
@@ -312,6 +399,11 @@ function ElevationHighchart({
       type: 'areaspline',
       height: 220,
       spacing: [8, 10, 2, 0],
+      events: {
+        render() {
+          onPlotBoundsChange(this);
+        },
+      },
       zooming: { type: 'y', mouseWheel: { enabled: true } },
     },
     xAxis: {
@@ -360,24 +452,27 @@ function ElevationHighchart({
     ],
   };
   return <HighchartsReact highcharts={Highcharts} options={options} />;
-}
+});
 
-function RelationshipHighchart({
+const RelationshipHighchart = memo(function RelationshipHighchart({
   xMetric,
   yMetric,
   data,
   domains,
+  onPointHover,
 }: {
   xMetric: MetricKey;
   yMetric: MetricKey;
-  data: Array<{ x: number; y: number; point: TrackPoint }>;
+  data: Array<{ xValue: number; yValue: number; point: TrackPoint }>;
   domains: { x: [number, number]; y: [number, number] };
+  onPointHover: (point: TrackPoint | null) => void;
 }) {
   const options: Highcharts.Options = {
     ...highchartsBase,
     chart: {
       ...highchartsBase.chart,
       type: 'scatter',
+      animation: false,
       height: 360,
       spacing: [10, 14, 12, 8],
     },
@@ -424,7 +519,21 @@ function RelationshipHighchart({
       },
     },
     plotOptions: {
-      scatter: { animation: false, marker: { radius: 3, symbol: 'circle' } },
+      scatter: {
+        animation: false,
+        marker: { radius: 3, symbol: 'circle' },
+        point: {
+          events: {
+            mouseOver() {
+              onPointHover(this.options.custom?.trackPoint as TrackPoint);
+            },
+            mouseOut() {
+              onPointHover(null);
+            },
+          },
+        },
+      },
+      series: { animation: false },
     },
     series: [
       {
@@ -432,15 +541,15 @@ function RelationshipHighchart({
         name: 'Activity points',
         color: '#27272a',
         data: data.map((item) => ({
-          x: item.x,
-          y: item.y,
+          x: item.xValue,
+          y: item.yValue,
           custom: { trackPoint: item.point },
         })),
       },
     ],
   };
   return <HighchartsReact highcharts={Highcharts} options={options} />;
-}
+});
 
 export function GpxExplorer() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -453,6 +562,9 @@ export function GpxExplorer() {
   const [activity, setActivity] = useState<ActivityData | null>(null);
   const [fileName, setFileName] = useState('');
   const [selection, setSelection] = useState<[number, number]>([0, 1]);
+  const [previewSelection, setPreviewSelection] = useState<
+    [number, number] | null
+  >(null);
   const [tile, setTile] = useState<TileMode>('default');
   const [colorMetric, setColorMetric] = useState<MetricKey | 'none'>('none');
   const [selectedMetrics, setSelectedMetrics] = useState<MetricKey[]>([
@@ -489,12 +601,17 @@ export function GpxExplorer() {
   } | null>(null);
   const [mapColumnPercent, setMapColumnPercent] = useState(58);
   const [isResizingLayout, setIsResizingLayout] = useState(false);
+  const [elevationPlotBounds, setElevationPlotBounds] = useState<{
+    left: number;
+    right: number;
+  } | null>(null);
 
   const loadSource = useCallback((source: string, name: string) => {
     const parsed = parseGpx(source, name);
     setActivity(parsed);
     setFileName(name);
     setSelection([0, parsed.points.length - 1]);
+    setPreviewSelection(null);
     setSelectedMetrics(
       metricKeys.filter(
         (metric) =>
@@ -556,21 +673,38 @@ export function GpxExplorer() {
     [loadSource],
   );
 
+  const updateElevationPlotBounds = useCallback((chart: Highcharts.Chart) => {
+    const next = {
+      left: Math.round(chart.plotLeft),
+      right: Math.round(chart.chartWidth - chart.plotLeft - chart.plotWidth),
+    };
+    setElevationPlotBounds((current) =>
+      current?.left === next.left && current.right === next.right
+        ? current
+        : next,
+    );
+  }, []);
+
   const segmentPoints = useMemo(
     () => activity?.points.slice(selection[0], selection[1] + 1) ?? [],
     [activity, selection],
   );
+  const mapSelection = previewSelection ?? selection;
+  const mapSegmentPoints = useMemo(
+    () => activity?.points.slice(mapSelection[0], mapSelection[1] + 1) ?? [],
+    [activity, mapSelection],
+  );
   const mapColorValues = useMemo(() => {
     if (colorMetric === 'none') return undefined;
     if (mapSmoothingPeriod !== 'none' && colorMetric !== 'distance')
-      return smoothTrackValues(segmentPoints, mapSmoothingPeriod).map(
+      return smoothTrackValues(mapSegmentPoints, mapSmoothingPeriod).map(
         (row) => row[colorMetric],
       );
-    return segmentPoints.map((point) => metricValue(point, colorMetric));
-  }, [colorMetric, mapSmoothingPeriod, segmentPoints]);
+    return mapSegmentPoints.map((point) => metricValue(point, colorMetric));
+  }, [colorMetric, mapSegmentPoints, mapSmoothingPeriod]);
   const summary = useMemo(
-    () => getSegmentSummary(segmentPoints),
-    [segmentPoints],
+    () => getSegmentSummary(mapSegmentPoints),
+    [mapSegmentPoints],
   );
   const elevationData = useMemo(
     () =>
@@ -648,12 +782,16 @@ export function GpxExplorer() {
       y: valuesFor('yValue', scatterYMetric),
     };
   }, [scatterData, scatterXMetric, scatterYMetric]);
-  const selectionDistances = activity
-    ? [
-        activity.points[selection[0]]?.distance ?? 0,
-        activity.points[selection[1]]?.distance ?? 0,
-      ]
-    : [0, 0];
+  const selectionDistances = useMemo(
+    () =>
+      activity
+        ? [
+            activity.points[mapSelection[0]]?.distance ?? 0,
+            activity.points[mapSelection[1]]?.distance ?? 0,
+          ]
+        : [0, 0],
+    [activity, mapSelection],
+  );
 
   useEffect(() => {
     if (!activity) return;
@@ -735,6 +873,23 @@ export function GpxExplorer() {
     if (!activity) return;
     const index = edge === 'start' ? selection[0] : selection[1];
     setFocusRequest({ point: activity.points[index], id: Date.now() });
+  };
+  const previewSliderSelection = (value: number | readonly number[]) => {
+    if (!activity) return;
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length !== 2 || values[0] >= values[1]) return;
+    const start = closestPointIndex(activity.points, values[0]);
+    const end = closestPointIndex(activity.points, values[1]);
+    if (start < end) setPreviewSelection([start, end]);
+  };
+  const commitSliderSelection = (value: number | readonly number[]) => {
+    if (!activity) return;
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length !== 2 || values[0] >= values[1]) return;
+    const start = closestPointIndex(activity.points, values[0]);
+    const end = closestPointIndex(activity.points, values[1]);
+    if (start < end) setSelection([start, end]);
+    setPreviewSelection(null);
   };
   const startLayoutResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!layoutRef.current) return;
@@ -906,7 +1061,20 @@ export function GpxExplorer() {
     return () => lifecycle.abort();
   }, [activity]);
 
+  const activityDate = useMemo(() => {
+    const timestamp = activity?.points.find(
+      (point) => point.time !== null,
+    )?.time;
+    return timestamp === null || timestamp === undefined
+      ? null
+      : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
+          timestamp,
+        );
+  }, [activity]);
   const summaryCards = [
+    ...(activityDate
+      ? [{ label: 'Activity date', value: activityDate, icon: CalendarDays }]
+      : []),
     {
       label: 'Segment distance',
       value: formatDistance(summary.distance),
@@ -936,819 +1104,913 @@ export function GpxExplorer() {
   ];
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="min-h-screen">
-        <header className="sticky top-0 z-[1000] border-b border-border bg-card">
-          <div className="mx-auto flex h-14 max-w-[1680px] items-center justify-between px-3 sm:px-4 lg:px-5">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="grid size-6 place-items-center rounded-[4px] bg-primary text-primary-foreground">
-                <Mountain className="size-3.5" />
-              </span>
-              <span className="font-semibold tracking-[-0.02em]">Trace</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <p className="hidden text-[11px] text-muted-foreground lg:block">
-                Processed locally · nothing is uploaded
-              </p>
-              <Button
-                size="lg"
-                className="h-8 px-3 text-xs"
-                onClick={() => inputRef.current?.click()}
-              >
-                <Upload data-icon="inline-start" /> Import GPX
-              </Button>
-              <input
-                ref={inputRef}
-                className="sr-only"
-                type="file"
-                accept=".gpx,application/gpx+xml"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void loadFile(file);
-                  event.target.value = '';
-                }}
-              />
-            </div>
-          </div>
-        </header>
-
-        <div
-          className={`mx-auto min-h-[calc(100vh-3.5rem)] max-w-[1680px] px-3 py-4 sm:px-4 sm:py-6 lg:flex lg:h-[calc(100vh-3.5rem)] lg:flex-col lg:overflow-hidden lg:px-5 lg:py-6 ${isDragging ? 'drop-active' : ''}`}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={(event) => {
-            if (event.currentTarget === event.target) setIsDragging(false);
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            setIsDragging(false);
-            const file = event.dataTransfer.files?.[0];
-            if (file) void loadFile(file);
-          }}
-        >
-          {error ? (
-            <div
-              role="alert"
-              className="mb-4 flex items-center justify-between rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs text-destructive"
-            >
-              <span>{error}</span>
-              <button className="font-semibold" onClick={() => setError(null)}>
-                Dismiss
-              </button>
-            </div>
-          ) : null}
-
-          {activity ? (
-            <>
-              <div className="mb-5 grid shrink-0 grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border md:grid-cols-5">
-                {summaryCards.map((card) => (
-                  <section key={card.label} className="bg-card px-3.5 py-3">
-                    <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
-                      <card.icon className="size-3.5 text-muted-foreground" />{' '}
-                      {card.label}
-                    </div>
-                    <p className="mt-1.5 font-mono text-[16px] font-semibold tracking-[-0.035em] sm:text-lg">
-                      {card.value}
-                    </p>
-                  </section>
-                ))}
+    <TooltipProvider delay={300}>
+      <main className="min-h-screen bg-background text-foreground">
+        <div className="min-h-screen">
+          <header className="sticky top-0 z-[1000] border-b border-border bg-card">
+            <div className="mx-auto flex h-14 max-w-[1680px] items-center justify-between px-3 sm:px-4 lg:px-5">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="grid size-6 place-items-center rounded-[4px] bg-primary text-primary-foreground">
+                  <Mountain className="size-3.5" />
+                </span>
+                <span className="font-semibold tracking-[-0.02em]">Trace</span>
               </div>
+              <div className="flex items-center gap-3">
+                <p className="hidden text-[11px] text-muted-foreground lg:block">
+                  Processed locally · nothing is uploaded
+                </p>
+                <Button
+                  size="lg"
+                  className="h-8 px-3 text-xs"
+                  title="Import a GPX activity from your device"
+                  onClick={() => inputRef.current?.click()}
+                >
+                  <Upload data-icon="inline-start" /> Import GPX
+                </Button>
+                <input
+                  ref={inputRef}
+                  className="sr-only"
+                  type="file"
+                  accept=".gpx,application/gpx+xml"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void loadFile(file);
+                    event.target.value = '';
+                  }}
+                />
+              </div>
+            </div>
+          </header>
 
+          <div
+            className={`mx-auto min-h-[calc(100vh-3.5rem)] max-w-[1680px] px-3 py-4 sm:px-4 sm:py-6 lg:flex lg:h-[calc(100vh-3.5rem)] lg:flex-col lg:overflow-hidden lg:px-5 lg:py-6 ${isDragging ? 'drop-active' : ''}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={(event) => {
+              if (event.currentTarget === event.target) setIsDragging(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setIsDragging(false);
+              const file = event.dataTransfer.files?.[0];
+              if (file) void loadFile(file);
+            }}
+          >
+            {error ? (
               <div
-                ref={layoutRef}
-                className="grid min-h-0 gap-4 lg:flex-1 lg:grid-cols-[var(--map-columns)] lg:gap-0"
-                style={
-                  {
-                    '--map-columns': `${mapColumnPercent}fr 8px ${100 - mapColumnPercent}fr`,
-                  } as CSSProperties
-                }
+                role="alert"
+                className="mb-4 flex items-center justify-between rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs text-destructive"
               >
-                <section className="min-w-0 overflow-hidden rounded-md border border-border bg-card lg:sticky lg:top-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-semibold">
-                        <MapIcon className="size-4 text-foreground" /> Route map
+                <span>{error}</span>
+                <ControlTooltip content="Dismiss this message">
+                  <button
+                    className="font-semibold"
+                    onClick={() => setError(null)}
+                  >
+                    Dismiss
+                  </button>
+                </ControlTooltip>
+              </div>
+            ) : null}
+
+            {activity ? (
+              <>
+                <div
+                  className={`mb-5 grid shrink-0 grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border ${activityDate ? 'md:grid-cols-3 lg:grid-cols-6' : 'md:grid-cols-5'}`}
+                >
+                  {summaryCards.map((card) => (
+                    <section key={card.label} className="bg-card px-3.5 py-3">
+                      <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+                        <card.icon className="size-3.5 text-muted-foreground" />{' '}
+                        {card.label}
                       </div>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
-                        Showing {selection[1] - selection[0] + 1} track points
+                      <p className="mt-1.5 font-mono text-[16px] font-semibold tracking-[-0.035em] sm:text-lg">
+                        {card.value}
                       </p>
-                    </div>
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-medium text-muted-foreground">
-                          Color path by
-                        </span>
-                        <Select
-                          value={colorMetric}
-                          onValueChange={(value) =>
-                            setColorMetric(value as MetricKey | 'none')
-                          }
-                        >
-                          <SelectTrigger
-                            id="color-route-by"
-                            aria-label="Color route by metric"
-                            className="h-8 min-w-36 bg-background text-xs"
-                          >
-                            <Layers3 className="size-3.5 text-muted-foreground" />
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent align="end">
-                            <SelectItem value="none">Static color</SelectItem>
-                            {metricKeys.map((metric) => (
-                              <SelectItem
-                                key={metric}
-                                value={metric}
-                                disabled={!activity.available[metric]}
-                              >
-                                By {metricConfig[metric].label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                    </section>
+                  ))}
+                </div>
+
+                <div
+                  ref={layoutRef}
+                  className="grid min-h-0 gap-4 lg:flex-1 lg:grid-cols-[var(--map-columns)] lg:gap-0"
+                  style={
+                    {
+                      '--map-columns': `${mapColumnPercent}fr 8px ${100 - mapColumnPercent}fr`,
+                    } as CSSProperties
+                  }
+                >
+                  <section className="min-w-0 overflow-hidden rounded-md border border-border bg-card lg:sticky lg:top-0 lg:flex lg:h-full lg:min-h-0 lg:flex-col">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+                      <div>
+                        <div className="flex items-center gap-2 text-sm font-semibold">
+                          <MapIcon className="size-4 text-foreground" /> Route
+                          map
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          Showing {selection[1] - selection[0] + 1} track points
+                        </p>
                       </div>
-                      {colorMetric !== 'none' ? (
-                        <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-end justify-end gap-2">
+                        <div className="flex flex-col gap-0.5">
                           <span className="text-[11px] font-medium text-muted-foreground">
-                            Path smoothing
+                            Color path by
                           </span>
                           <Select
-                            value={String(mapSmoothingPeriod)}
+                            value={colorMetric}
                             onValueChange={(value) =>
-                              setMapSmoothingPeriod(
-                                value === 'none'
-                                  ? 'none'
-                                  : (Number(value) as SmoothingPeriod),
-                              )
+                              setColorMetric(value as MetricKey | 'none')
                             }
-                            disabled={colorMetric === 'distance'}
                           >
                             <SelectTrigger
-                              aria-label="Map color smoothing period"
-                              className="h-8 w-28 bg-background text-xs"
+                              id="color-route-by"
+                              aria-label="Color route by metric"
+                              className="h-8 min-w-36 bg-background text-xs"
                             >
-                              <SelectValue placeholder="Smoothing" />
+                              {colorMetric === 'none' ? (
+                                <Layers3 className="size-3.5 text-muted-foreground" />
+                              ) : (
+                                <MetricIcon
+                                  metric={colorMetric}
+                                  className="size-3.5"
+                                  style={{
+                                    color: metricConfig[colorMetric].color,
+                                  }}
+                                />
+                              )}
+                              <SelectValue />
                             </SelectTrigger>
                             <SelectContent align="end">
-                              <SelectItem value="none">No smoothing</SelectItem>
-                              {smoothingOptions.map((option) => (
+                              <SelectItem value="none">
+                                <Layers3 className="text-muted-foreground" />
+                                Static color
+                              </SelectItem>
+                              {metricKeys.map((metric) => (
                                 <SelectItem
-                                  key={option.value}
-                                  value={String(option.value)}
+                                  key={metric}
+                                  value={metric}
+                                  disabled={!activity.available[metric]}
                                 >
-                                  {option.label}
+                                  <MetricIcon
+                                    metric={metric}
+                                    style={{
+                                      color: metricConfig[metric].color,
+                                    }}
+                                  />
+                                  By {metricConfig[metric].label}
                                 </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                         </div>
-                      ) : null}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 bg-background text-xs"
-                        onClick={() => setFitRequest((current) => current + 1)}
-                      >
-                        <Focus data-icon="inline-start" /> Fit segment
-                      </Button>
-                      <Select
-                        value={tile}
-                        onValueChange={(value) => setTile(value as TileMode)}
-                      >
-                        <SelectTrigger
-                          aria-label="Choose map tiles"
-                          className="h-8 w-28 bg-background text-xs"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent align="end">
-                          <SelectItem value="default">Default</SelectItem>
-                          <SelectItem value="satellite">Satellite</SelectItem>
-                          <SelectItem value="hybrid">Hybrid</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!segmentOpen ? (
+                        {colorMetric !== 'none' ? (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[11px] font-medium text-muted-foreground">
+                              Path smoothing
+                            </span>
+                            <Select
+                              value={String(mapSmoothingPeriod)}
+                              onValueChange={(value) =>
+                                setMapSmoothingPeriod(
+                                  value === 'none'
+                                    ? 'none'
+                                    : (Number(value) as SmoothingPeriod),
+                                )
+                              }
+                              disabled={colorMetric === 'distance'}
+                            >
+                              <SelectTrigger
+                                aria-label="Map color smoothing period"
+                                className="h-8 w-28 bg-background text-xs"
+                              >
+                                <SelectValue placeholder="Smoothing">
+                                  {formatSmoothingValue}
+                                </SelectValue>
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                <SelectItem value="none">
+                                  No smoothing
+                                </SelectItem>
+                                {smoothingOptions.map((option) => (
+                                  <SelectItem
+                                    key={option.value}
+                                    value={String(option.value)}
+                                  >
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ) : null}
                         <Button
                           variant="outline"
                           size="sm"
                           className="h-8 bg-background text-xs"
-                          onClick={() => setSegmentOpen(true)}
+                          title="Zoom the map to the selected segment"
+                          onClick={() =>
+                            setFitRequest((current) => current + 1)
+                          }
                         >
-                          <PanelRightOpen data-icon="inline-start" /> Show
-                          segment
+                          <Focus data-icon="inline-start" /> Fit segment
                         </Button>
-                      ) : null}
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[11px] font-medium text-muted-foreground">
+                            Map tiles
+                          </span>
+                          <Select
+                            value={tile}
+                            onValueChange={(value) =>
+                              setTile(value as TileMode)
+                            }
+                          >
+                            <SelectTrigger
+                              aria-label="Choose map tiles"
+                              className="h-8 w-28 bg-background text-xs"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                              <SelectItem value="default">Default</SelectItem>
+                              <SelectItem value="satellite">
+                                Satellite
+                              </SelectItem>
+                              <SelectItem value="hybrid">Hybrid</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto">
-                    <RouteMap
-                      points={segmentPoints}
-                      tile={tile}
-                      colorMetric={colorMetric}
-                      colorValues={mapColorValues}
-                      fitRequest={fitRequest}
-                      focusRequest={focusRequest}
-                      highlightedPoint={highlightedPoint}
-                      className="h-full"
-                      mapHeightClassName="h-[560px] min-h-[440px] lg:h-full"
+                    <div className="min-h-0 flex-1 overflow-y-auto">
+                      <RouteMap
+                        points={mapSegmentPoints}
+                        tile={tile}
+                        colorMetric={colorMetric}
+                        colorValues={mapColorValues}
+                        fitRequest={fitRequest}
+                        focusRequest={focusRequest}
+                        highlightedPoint={highlightedPoint}
+                        className="h-full"
+                        mapHeightClassName="h-[560px] min-h-[440px] lg:h-full"
+                      />
+                    </div>
+                  </section>
+
+                  <div
+                    role="separator"
+                    aria-label="Resize map and analysis columns"
+                    aria-orientation="vertical"
+                    aria-valuemin={32}
+                    aria-valuemax={72}
+                    aria-valuenow={Math.round(mapColumnPercent)}
+                    tabIndex={0}
+                    onPointerDown={startLayoutResize}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowLeft') {
+                        event.preventDefault();
+                        nudgeLayoutResize(-2);
+                      }
+                      if (event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        nudgeLayoutResize(2);
+                      }
+                    }}
+                    className={`group relative hidden cursor-col-resize items-center justify-center lg:flex ${isResizingLayout ? 'bg-primary/10' : 'hover:bg-secondary'}`}
+                  >
+                    <span
+                      className={`h-12 w-px rounded-full transition-colors ${isResizingLayout ? 'bg-primary' : 'bg-border group-hover:bg-primary/60'}`}
                     />
                   </div>
-                </section>
 
-                <div
-                  role="separator"
-                  aria-label="Resize map and analysis columns"
-                  aria-orientation="vertical"
-                  aria-valuemin={32}
-                  aria-valuemax={72}
-                  aria-valuenow={Math.round(mapColumnPercent)}
-                  tabIndex={0}
-                  onPointerDown={startLayoutResize}
-                  onKeyDown={(event) => {
-                    if (event.key === 'ArrowLeft') {
-                      event.preventDefault();
-                      nudgeLayoutResize(-2);
-                    }
-                    if (event.key === 'ArrowRight') {
-                      event.preventDefault();
-                      nudgeLayoutResize(2);
-                    }
-                  }}
-                  className={`group relative hidden cursor-col-resize items-center justify-center lg:flex ${isResizingLayout ? 'bg-primary/10' : 'hover:bg-secondary'}`}
-                >
-                  <span
-                    className={`h-12 w-px rounded-full transition-colors ${isResizingLayout ? 'bg-primary' : 'bg-border group-hover:bg-primary/60'}`}
-                  />
-                </div>
+                  <div className="min-w-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
+                    {segmentOpen ? (
+                      <section className="rounded-md border border-border bg-card p-4 sm:p-5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2 text-sm font-semibold">
+                              <Activity className="size-4 text-primary" />{' '}
+                              Segment selection
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Drag either handle to focus the entire dashboard.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-[4px] border border-border bg-secondary px-2 py-1 font-mono text-[10px] font-semibold text-accent-foreground">
+                              {formatDistance(summary.distance)}
+                            </span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs text-muted-foreground"
+                              title="Collapse the segment selection controls"
+                              onClick={() => setSegmentOpen(false)}
+                            >
+                              <PanelTopClose data-icon="inline-start" /> Hide
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="relative mt-4 overflow-hidden rounded-md border bg-secondary/45 px-1 pt-2">
+                          <ElevationHighchart
+                            data={elevationData}
+                            selectionDistances={selectionDistances}
+                            onPlotBoundsChange={updateElevationPlotBounds}
+                          />
+                          <div
+                            className="absolute bottom-5 z-10"
+                            style={{
+                              left: elevationPlotBounds?.left ?? 20,
+                              right: elevationPlotBounds?.right ?? 20,
+                            }}
+                          >
+                            <Slider
+                              aria-label="Selected activity range"
+                              min={0}
+                              max={activity.totalDistance}
+                              step={1}
+                              value={mapSelection.map(
+                                (index) => activity.points[index].distance,
+                              )}
+                              onValueChange={previewSliderSelection}
+                              onValueCommitted={commitSliderSelection}
+                              className="[&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-range]]:bg-primary [&_[data-slot=slider-thumb]]:size-4 [&_[data-slot=slider-thumb]]:border-2 [&_[data-slot=slider-thumb]]:border-primary"
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-4 grid grid-cols-2 gap-3">
+                          {(['start', 'end'] as const).map((edge) => {
+                            const pointIndex =
+                              edge === 'start' ? selection[0] : selection[1];
+                            const inputIndex = edge === 'start' ? 0 : 1;
+                            const committedValue = formatInputDistance(
+                              activity.points[pointIndex].distance,
+                            );
+                            const isPending =
+                              rangeInputValues[inputIndex] !== committedValue;
+                            return (
+                              <div
+                                key={edge}
+                                className="rounded-md border bg-background p-3"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted-foreground">
+                                    {edge}
+                                  </span>
+                                  <span
+                                    className={`size-2 rounded-full ${edge === 'start' ? 'bg-[#66bb6a]' : 'bg-[#ff4d4e]'}`}
+                                  />
+                                </div>
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    max={activity.totalDistance / 1000}
+                                    step="0.01"
+                                    inputMode="decimal"
+                                    value={rangeInputValues[inputIndex]}
+                                    onChange={(event) =>
+                                      updateRangeInput(edge, event.target.value)
+                                    }
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        commitRangeInput(edge);
+                                      }
+                                    }}
+                                    aria-label={`${edge} distance in kilometers`}
+                                    title={
+                                      isPending
+                                        ? 'Press Enter to apply this value'
+                                        : undefined
+                                    }
+                                    className={`h-8 min-w-0 flex-1 font-mono text-sm font-semibold ${isPending ? 'border-orange-500 focus-visible:border-orange-500 focus-visible:ring-orange-500/25' : ''}`}
+                                  />
+                                  <span className="shrink-0 text-xs text-muted-foreground">
+                                    km
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="icon-sm"
+                                    aria-label={`Move ${edge} backward`}
+                                    onClick={() => adjustSelection(edge, -1)}
+                                  >
+                                    <Minus />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="icon-sm"
+                                    aria-label={`Move ${edge} forward`}
+                                    onClick={() => adjustSelection(edge, 1)}
+                                  >
+                                    <Plus />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="icon-sm"
+                                    aria-label={`Focus ${edge}`}
+                                    title={`Focus ${edge}`}
+                                    onClick={() => focusOn(edge)}
+                                  >
+                                    <Focus />
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <ControlTooltip content="Select the entire activity">
+                          <button
+                            className="mt-3 w-full text-center text-xs font-semibold text-primary hover:underline"
+                            onClick={() =>
+                              setSelection([0, activity.points.length - 1])
+                            }
+                          >
+                            Reset to full activity
+                          </button>
+                        </ControlTooltip>
+                        <div className="mt-4 border-t pt-4">
+                          <div className="flex items-center gap-2 text-xs font-semibold">
+                            <Bookmark className="size-3.5 text-primary" /> Saved
+                            segments
+                          </div>
+                          <div className="mt-2 flex gap-2">
+                            <Input
+                              value={segmentName}
+                              onChange={(event) =>
+                                setSegmentName(event.target.value)
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') saveSegment();
+                              }}
+                              placeholder="Segment name"
+                              aria-label="Saved segment name"
+                              className="h-8 text-xs"
+                            />
+                            <Button
+                              size="sm"
+                              className="h-8 shrink-0 text-xs"
+                              title="Save the current start and end points"
+                              disabled={!segmentName.trim()}
+                              onClick={saveSegment}
+                            >
+                              <Save data-icon="inline-start" /> Save
+                            </Button>
+                          </div>
+                          {savedSegments.length ? (
+                            <div className="mt-2 space-y-1.5">
+                              {savedSegments.map((segment) => (
+                                <div
+                                  key={segment.id}
+                                  className="flex items-center gap-1.5 rounded-md border bg-background p-1.5"
+                                >
+                                  <span
+                                    className="min-w-0 flex-1 truncate px-1 text-xs font-medium"
+                                    title={segment.name}
+                                  >
+                                    {segment.name}
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="icon-sm"
+                                    className="size-7"
+                                    aria-label={`Load ${segment.name}`}
+                                    onClick={() => loadSegment(segment)}
+                                  >
+                                    <FolderOpen />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="size-7 text-muted-foreground hover:text-destructive"
+                                    aria-label={`Delete ${segment.name}`}
+                                    onClick={() => deleteSegment(segment.id)}
+                                  >
+                                    <Trash2 />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-2 text-[11px] text-muted-foreground">
+                              Save the current range to reuse it with this GPX
+                              file.
+                            </p>
+                          )}
+                        </div>
+                      </section>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-full bg-background text-xs"
+                        title="Expand the segment selection controls"
+                        onClick={() => setSegmentOpen(true)}
+                      >
+                        <PanelTopOpen data-icon="inline-start" /> Show segment
+                        selection
+                      </Button>
+                    )}
 
-                <div className="min-w-0 lg:min-h-0 lg:overflow-y-auto lg:pr-2">
-                  {segmentOpen ? (
-                    <section className="rounded-md border border-border bg-card p-4 sm:p-5">
-                      <div className="flex items-start justify-between gap-3">
+                    <section className="mt-5 rounded-md border border-border bg-card p-4 sm:p-5">
+                      <div className="flex flex-col gap-4">
                         <div>
                           <div className="flex items-center gap-2 text-sm font-semibold">
-                            <Activity className="size-4 text-primary" /> Segment
-                            selection
+                            <ChartNoAxesCombined className="size-4 text-primary" />{' '}
+                            Data charts
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            Drag either handle to focus the entire dashboard.
+                            Each scale adjusts to the selected segment.
+                            Horizontal values always start at zero.
                           </p>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-[4px] border border-border bg-secondary px-2 py-1 font-mono text-[10px] font-semibold text-accent-foreground">
-                            {formatDistance(summary.distance)}
-                          </span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 text-xs text-muted-foreground"
-                            onClick={() => setSegmentOpen(false)}
-                          >
-                            <PanelRightClose data-icon="inline-start" /> Hide
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="relative mt-4 overflow-hidden rounded-md border bg-secondary/45 px-1 pt-2">
-                        <ElevationHighchart
-                          data={elevationData}
-                          selectionDistances={selectionDistances}
-                        />
-                        <div className="absolute inset-x-5 bottom-5 z-10">
-                          <Slider
-                            aria-label="Selected activity range"
-                            min={0}
-                            max={activity.points.length - 1}
-                            step={1}
-                            value={selection}
-                            onValueChange={(value) => {
-                              const values = Array.isArray(value)
-                                ? value
-                                : [value];
-                              if (values.length === 2 && values[0] < values[1])
-                                setSelection([values[0], values[1]]);
-                            }}
-                            className="[&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-range]]:bg-primary [&_[data-slot=slider-thumb]]:size-4 [&_[data-slot=slider-thumb]]:border-2 [&_[data-slot=slider-thumb]]:border-primary"
-                          />
-                        </div>
-                      </div>
-                      <div className="mt-4 grid grid-cols-2 gap-3">
-                        {(['start', 'end'] as const).map((edge) => {
-                          const pointIndex =
-                            edge === 'start' ? selection[0] : selection[1];
-                          const inputIndex = edge === 'start' ? 0 : 1;
-                          const committedValue = formatInputDistance(
-                            activity.points[pointIndex].distance,
-                          );
-                          const isPending =
-                            rangeInputValues[inputIndex] !== committedValue;
-                          return (
-                            <div
-                              key={edge}
-                              className="rounded-md border bg-background p-3"
+                        <div className="flex w-full flex-wrap items-end gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label
+                              htmlFor="smooth-data"
+                              className="cursor-pointer text-[11px] font-semibold whitespace-nowrap"
                             >
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-semibold uppercase tracking-[.14em] text-muted-foreground">
-                                  {edge}
-                                </span>
-                                <span
-                                  className={`size-2 rounded-full ${edge === 'start' ? 'bg-zinc-400' : 'bg-foreground'}`}
+                              Smooth data
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <ControlTooltip content="Apply a rolling average to the data charts">
+                                <Checkbox
+                                  id="smooth-data"
+                                  checked={smoothEnabled}
+                                  onCheckedChange={(checked) =>
+                                    setSmoothEnabled(checked)
+                                  }
                                 />
-                              </div>
-                              <div className="mt-1.5 flex items-center gap-1.5">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  max={activity.totalDistance / 1000}
-                                  step="0.01"
-                                  inputMode="decimal"
-                                  value={rangeInputValues[inputIndex]}
-                                  onChange={(event) =>
-                                    updateRangeInput(edge, event.target.value)
-                                  }
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter') {
-                                      event.preventDefault();
-                                      commitRangeInput(edge);
-                                    }
-                                  }}
-                                  aria-label={`${edge} distance in kilometers`}
-                                  title={
-                                    isPending
-                                      ? 'Press Enter to apply this value'
-                                      : undefined
-                                  }
-                                  className={`h-8 min-w-0 font-mono text-sm font-semibold ${isPending ? 'border-orange-500 focus-visible:border-orange-500 focus-visible:ring-orange-500/25' : ''}`}
-                                />
-                                <span className="text-xs text-muted-foreground">
-                                  km
-                                </span>
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                <Button
-                                  variant="outline"
-                                  size="icon-sm"
-                                  aria-label={`Move ${edge} backward`}
-                                  onClick={() => adjustSelection(edge, -1)}
-                                >
-                                  <Minus />
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="icon-sm"
-                                  aria-label={`Move ${edge} forward`}
-                                  onClick={() => adjustSelection(edge, 1)}
-                                >
-                                  <Plus />
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 gap-1 px-2 text-[11px]"
-                                  onClick={() => focusOn(edge)}
-                                >
-                                  <Focus className="size-3" /> Focus
-                                </Button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <button
-                        className="mt-3 w-full text-center text-xs font-semibold text-primary hover:underline"
-                        onClick={() =>
-                          setSelection([0, activity.points.length - 1])
-                        }
-                      >
-                        Reset to full activity
-                      </button>
-                      <div className="mt-4 border-t pt-4">
-                        <div className="flex items-center gap-2 text-xs font-semibold">
-                          <Bookmark className="size-3.5 text-primary" /> Saved
-                          segments
-                        </div>
-                        <div className="mt-2 flex gap-2">
-                          <Input
-                            value={segmentName}
-                            onChange={(event) =>
-                              setSegmentName(event.target.value)
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') saveSegment();
-                            }}
-                            placeholder="Segment name"
-                            aria-label="Saved segment name"
-                            className="h-8 text-xs"
-                          />
-                          <Button
-                            size="sm"
-                            className="h-8 shrink-0 text-xs"
-                            disabled={!segmentName.trim()}
-                            onClick={saveSegment}
-                          >
-                            <Save data-icon="inline-start" /> Save
-                          </Button>
-                        </div>
-                        {savedSegments.length ? (
-                          <div className="mt-2 space-y-1.5">
-                            {savedSegments.map((segment) => (
-                              <div
-                                key={segment.id}
-                                className="flex items-center gap-1.5 rounded-md border bg-background p-1.5"
-                              >
-                                <span
-                                  className="min-w-0 flex-1 truncate px-1 text-xs font-medium"
-                                  title={segment.name}
-                                >
-                                  {segment.name}
-                                </span>
-                                <Button
-                                  variant="outline"
-                                  size="icon-sm"
-                                  className="size-7"
-                                  aria-label={`Load ${segment.name}`}
-                                  onClick={() => loadSegment(segment)}
-                                >
-                                  <FolderOpen />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="size-7 text-muted-foreground hover:text-destructive"
-                                  aria-label={`Delete ${segment.name}`}
-                                  onClick={() => deleteSegment(segment.id)}
-                                >
-                                  <Trash2 />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="mt-2 text-[11px] text-muted-foreground">
-                            Save the current range to reuse it with this GPX
-                            file.
-                          </p>
-                        )}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  <section className="mt-5 rounded-md border border-border bg-card p-4 sm:p-5">
-                    <div className="flex flex-col gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                          <ChartNoAxesCombined className="size-4 text-primary" />{' '}
-                          Data charts
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Each scale adjusts to the selected segment. Horizontal
-                          values always start at zero.
-                        </p>
-                      </div>
-                      <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-2">
-                        <div className="flex items-center gap-1">
-                          <label
-                            htmlFor="smooth-data"
-                            className="flex cursor-pointer items-center gap-1 text-[11px] font-semibold whitespace-nowrap"
-                          >
-                            <Checkbox
-                              id="smooth-data"
-                              checked={smoothEnabled}
-                              onCheckedChange={(checked) =>
-                                setSmoothEnabled(checked)
-                              }
-                            />{' '}
-                            Smooth data
-                          </label>
-                          <Select
-                            value={String(smoothingPeriod)}
-                            onValueChange={(value) =>
-                              setSmoothingPeriod(
-                                Number(value) as SmoothingPeriod,
-                              )
-                            }
-                          >
-                            <SelectTrigger
-                              aria-label="Smoothing period"
-                              disabled={!smoothEnabled}
-                              className="h-7 w-16 border bg-secondary px-2 text-xs"
-                            >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="end">
-                              {smoothingOptions.map((option) => (
-                                <SelectItem
-                                  key={option.value}
-                                  value={String(option.value)}
-                                >
-                                  {option.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <label
-                            htmlFor="data-chart-height"
-                            className="text-[11px] font-semibold whitespace-nowrap"
-                          >
-                            Chart height
-                          </label>
-                          <Select
-                            value={dataChartHeight}
-                            onValueChange={(value) =>
-                              setDataChartHeight(value as DataChartHeight)
-                            }
-                          >
-                            <SelectTrigger
-                              id="data-chart-height"
-                              aria-label="Data chart height"
-                              className="h-7 w-24 border bg-secondary px-2 text-xs"
-                            >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="end">
-                              {dataChartHeightOptions.map((option) => (
-                                <SelectItem
-                                  key={option.value}
-                                  value={option.value}
-                                >
-                                  {option.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="flex items-center gap-1 rounded-md bg-secondary p-1">
-                          <button
-                            className={`rounded-[3px] px-2 py-1.5 text-[11px] font-semibold transition ${xMode === 'distance' ? 'bg-card' : 'text-muted-foreground'}`}
-                            onClick={() => setXMode('distance')}
-                          >
-                            Distance
-                          </button>
-                          <button
-                            disabled={activity.duration === null}
-                            className={`rounded-[3px] px-2 py-1.5 text-[11px] font-semibold transition disabled:opacity-40 ${xMode === 'time' ? 'bg-card' : 'text-muted-foreground'}`}
-                            onClick={() => setXMode('time')}
-                          >
-                            Time
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    <div
-                      className="mt-4 flex flex-wrap gap-2"
-                      aria-label="Visible data fields"
-                    >
-                      {metricKeys.map((metric) => {
-                        const active = selectedMetrics.includes(metric);
-                        const available = activity.available[metric];
-                        return (
-                          <button
-                            key={metric}
-                            disabled={!available}
-                            aria-pressed={active}
-                            onClick={() => toggleMetric(metric)}
-                            style={
-                              active
-                                ? {
-                                    borderColor: metricConfig[metric].color,
-                                    backgroundColor: metricConfig[metric].color,
-                                    color: '#fff',
-                                  }
-                                : undefined
-                            }
-                            className={`flex items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${active ? '' : 'bg-background hover:border-primary/50'}`}
-                          >
-                            <span
-                              className="size-1.5 rounded-full"
-                              style={{
-                                backgroundColor: metricConfig[metric].color,
-                              }}
-                            />
-                            {metricConfig[metric].label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {selectedMetrics.length ? (
-                      <div className="mt-5 grid gap-4">
-                        {selectedMetrics.map((metric) => {
-                          const values = chartData
-                            .map((item) => item[metric])
-                            .filter(
-                              (value): value is number =>
-                                typeof value === 'number' &&
-                                Number.isFinite(value),
-                            );
-                          const min = values.length ? Math.min(...values) : 0;
-                          const max = values.length ? Math.max(...values) : 1;
-                          const margin = Math.max(
-                            (max - min) * 0.08,
-                            metricConfig[metric].fallbackMargin,
-                          );
-                          const domain: [number, number] = [
-                            Math.floor((min - margin) * 10) / 10,
-                            Math.ceil((max + margin) * 10) / 10,
-                          ];
-                          return (
-                            <article
-                              key={metric}
-                              className="rounded-md border bg-background/65 p-3 sm:p-4"
-                            >
-                              <div className="mb-2 flex items-baseline justify-between">
-                                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-                                  <span
-                                    className="size-1.5 rounded-full"
-                                    style={{
-                                      backgroundColor:
-                                        metricConfig[metric].color,
-                                    }}
-                                  />
-                                  {metricConfig[metric].label}
-                                </h3>
-                                <span className="font-mono text-[10px] text-muted-foreground">
-                                  {metricConfig[metric].unit}
-                                </span>
-                              </div>
-                              <MetricHighchart
-                                metric={metric}
-                                data={chartData.map((item) => ({
-                                  x: item.x,
-                                  y: item[metric],
-                                  point: item.point,
-                                }))}
-                                domain={domain}
-                                xMode={xMode}
-                                height={
-                                  dataChartHeightOptions.find(
-                                    (option) =>
-                                      option.value === dataChartHeight,
-                                  )?.pixels ?? 240
+                              </ControlTooltip>
+                              <Select
+                                value={String(smoothingPeriod)}
+                                onValueChange={(value) =>
+                                  setSmoothingPeriod(
+                                    Number(value) as SmoothingPeriod,
+                                  )
                                 }
-                                onPointHover={setHighlightedPoint}
-                              />
-                            </article>
+                              >
+                                <SelectTrigger
+                                  aria-label="Smoothing period"
+                                  disabled={!smoothEnabled}
+                                  className="h-7 w-32 border bg-secondary px-2 text-xs"
+                                >
+                                  <SelectValue>
+                                    {formatSmoothingValue}
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent align="end">
+                                  {smoothingOptions.map((option) => (
+                                    <SelectItem
+                                      key={option.value}
+                                      value={String(option.value)}
+                                    >
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label
+                              htmlFor="data-chart-height"
+                              className="text-[11px] font-semibold whitespace-nowrap"
+                            >
+                              Chart height
+                            </label>
+                            <Select
+                              value={dataChartHeight}
+                              onValueChange={(value) =>
+                                setDataChartHeight(value as DataChartHeight)
+                              }
+                            >
+                              <SelectTrigger
+                                id="data-chart-height"
+                                aria-label="Data chart height"
+                                className="h-7 w-32 border bg-secondary px-2 text-xs"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                {dataChartHeightOptions.map((option) => (
+                                  <SelectItem
+                                    key={option.value}
+                                    value={option.value}
+                                  >
+                                    {option.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[11px] font-semibold whitespace-nowrap">
+                              X axis
+                            </span>
+                            <Select
+                              value={xMode}
+                              onValueChange={(value) =>
+                                setXMode(value as XAxisMode)
+                              }
+                            >
+                              <SelectTrigger
+                                aria-label="Chart horizontal axis"
+                                className="h-7 w-32 border bg-secondary px-2 text-xs"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                <SelectItem value="distance">
+                                  Distance
+                                </SelectItem>
+                                <SelectItem
+                                  value="time"
+                                  disabled={activity.duration === null}
+                                >
+                                  Time
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      </div>
+                      <div
+                        className="mt-4 flex flex-wrap gap-2"
+                        aria-label="Visible data fields"
+                      >
+                        {metricKeys.map((metric) => {
+                          const active = selectedMetrics.includes(metric);
+                          const available = activity.available[metric];
+                          return (
+                            <ControlTooltip
+                              key={metric}
+                              content={`${active ? 'Hide' : 'Show'} the ${metricConfig[metric].label} chart`}
+                            >
+                              <button
+                                disabled={!available}
+                                aria-pressed={active}
+                                onClick={() => toggleMetric(metric)}
+                                style={
+                                  active
+                                    ? {
+                                        borderColor: metricConfig[metric].color,
+                                        backgroundColor:
+                                          metricConfig[metric].color,
+                                        color: '#fff',
+                                      }
+                                    : undefined
+                                }
+                                className={`flex items-center gap-1.5 rounded-[4px] border px-2.5 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-35 ${active ? '' : 'bg-background hover:border-primary/50'}`}
+                              >
+                                <MetricIcon
+                                  metric={metric}
+                                  className="size-3.5"
+                                  style={
+                                    active
+                                      ? undefined
+                                      : { color: metricConfig[metric].color }
+                                  }
+                                />
+                                {metricConfig[metric].label}
+                              </button>
+                            </ControlTooltip>
                           );
                         })}
                       </div>
-                    ) : (
-                      <div className="mt-5 rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">
-                        Choose one or more data fields above.
-                      </div>
-                    )}
-                  </section>
-                  <section className="mt-5 rounded-md border border-border bg-card p-4 sm:p-5">
-                    <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-                      <div>
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                          <ChartScatter className="size-4 text-primary" />{' '}
-                          Relationship explorer
+                      {selectedMetrics.length ? (
+                        <div className="mt-5 grid gap-4">
+                          {selectedMetrics.map((metric) => {
+                            return (
+                              <article
+                                key={metric}
+                                className="rounded-md border bg-background/65 p-3 sm:p-4"
+                              >
+                                <div className="mb-2 flex items-baseline justify-between">
+                                  <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                                    <span
+                                      className="size-1.5 rounded-full"
+                                      style={{
+                                        backgroundColor:
+                                          metricConfig[metric].color,
+                                      }}
+                                    />
+                                    {metricConfig[metric].label}
+                                  </h3>
+                                  <span className="font-mono text-[10px] text-muted-foreground">
+                                    {metricConfig[metric].unit}
+                                  </span>
+                                </div>
+                                <MetricHighchart
+                                  metric={metric}
+                                  data={chartData}
+                                  xMode={xMode}
+                                  height={
+                                    dataChartHeightOptions.find(
+                                      (option) =>
+                                        option.value === dataChartHeight,
+                                    )?.pixels ?? 240
+                                  }
+                                  onPointHover={setHighlightedPoint}
+                                />
+                              </article>
+                            );
+                          })}
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          Compare any two recorded or derived fields across the
-                          current segment.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <div className="rounded-md border bg-background px-2.5 py-1.5">
-                          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">
-                            X axis
+                      ) : (
+                        <div className="mt-5 rounded-md border border-dashed py-12 text-center text-sm text-muted-foreground">
+                          Choose one or more data fields above.
+                        </div>
+                      )}
+                    </section>
+                    <section className="mt-5 rounded-md border border-border bg-card p-4 sm:p-5">
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-semibold">
+                            <ChartScatter className="size-4 text-primary" />{' '}
+                            Relationship explorer
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Compare any two recorded or derived fields across
+                            the current segment.
                           </p>
-                          <Select
-                            value={scatterXMetric}
-                            onValueChange={(value) =>
-                              setScatterXMetric(value as MetricKey)
-                            }
-                          >
-                            <SelectTrigger
-                              aria-label="Scatter plot X axis"
-                              className="h-7 min-w-36 border-0 bg-secondary text-xs"
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">
+                              X axis
+                            </p>
+                            <Select
+                              value={scatterXMetric}
+                              onValueChange={(value) =>
+                                setScatterXMetric(value as MetricKey)
+                              }
                             >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="end">
-                              {metricKeys.map((metric) => (
-                                <SelectItem
-                                  key={metric}
-                                  value={metric}
-                                  disabled={!activity.available[metric]}
-                                >
-                                  {metricConfig[metric].label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="rounded-md border bg-background px-2.5 py-1.5">
-                          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">
-                            Y axis
-                          </p>
-                          <Select
-                            value={scatterYMetric}
-                            onValueChange={(value) =>
-                              setScatterYMetric(value as MetricKey)
-                            }
+                              <SelectTrigger
+                                aria-label="Scatter plot X axis"
+                                className="h-7 min-w-36 border-0 bg-secondary text-xs"
+                              >
+                                <MetricIcon
+                                  metric={scatterXMetric}
+                                  className="size-3.5"
+                                  style={{
+                                    color: metricConfig[scatterXMetric].color,
+                                  }}
+                                />
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                {metricKeys.map((metric) => (
+                                  <SelectItem
+                                    key={metric}
+                                    value={metric}
+                                    disabled={!activity.available[metric]}
+                                  >
+                                    <MetricIcon
+                                      metric={metric}
+                                      style={{
+                                        color: metricConfig[metric].color,
+                                      }}
+                                    />
+                                    {metricConfig[metric].label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="icon-sm"
+                            aria-label="Swap X and Y axes"
+                            onClick={() => {
+                              setScatterXMetric(scatterYMetric);
+                              setScatterYMetric(scatterXMetric);
+                            }}
                           >
-                            <SelectTrigger
-                              aria-label="Scatter plot Y axis"
-                              className="h-7 min-w-36 border-0 bg-secondary text-xs"
+                            <ArrowLeftRight />
+                          </Button>
+                          <div className="flex items-center gap-2">
+                            <p className="text-[10px] font-semibold uppercase tracking-[.12em] text-muted-foreground">
+                              Y axis
+                            </p>
+                            <Select
+                              value={scatterYMetric}
+                              onValueChange={(value) =>
+                                setScatterYMetric(value as MetricKey)
+                              }
                             >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent align="end">
-                              {metricKeys.map((metric) => (
-                                <SelectItem
-                                  key={metric}
-                                  value={metric}
-                                  disabled={!activity.available[metric]}
-                                >
-                                  {metricConfig[metric].label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                              <SelectTrigger
+                                aria-label="Scatter plot Y axis"
+                                className="h-7 min-w-36 border-0 bg-secondary text-xs"
+                              >
+                                <MetricIcon
+                                  metric={scatterYMetric}
+                                  className="size-3.5"
+                                  style={{
+                                    color: metricConfig[scatterYMetric].color,
+                                  }}
+                                />
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent align="end">
+                                {metricKeys.map((metric) => (
+                                  <SelectItem
+                                    key={metric}
+                                    value={metric}
+                                    disabled={!activity.available[metric]}
+                                  >
+                                    <MetricIcon
+                                      metric={metric}
+                                      style={{
+                                        color: metricConfig[metric].color,
+                                      }}
+                                    />
+                                    {metricConfig[metric].label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    {scatterData.length ? (
-                      <div className="mt-5 rounded-md border bg-background/65 p-3 sm:p-4">
-                        <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
-                          <span>
-                            {metricConfig[scatterYMetric].label} vs.{' '}
-                            {metricConfig[scatterXMetric].label}
-                          </span>
-                          <span className="font-mono">
-                            {scatterData.length} points
-                          </span>
+                      {scatterData.length ? (
+                        <div className="mt-5 rounded-md border bg-background/65 p-3 sm:p-4">
+                          <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span>
+                              {metricConfig[scatterYMetric].label} vs.{' '}
+                              {metricConfig[scatterXMetric].label}
+                            </span>
+                            <span className="font-mono">
+                              {scatterData.length} points
+                            </span>
+                          </div>
+                          <RelationshipHighchart
+                            xMetric={scatterXMetric}
+                            yMetric={scatterYMetric}
+                            data={scatterData}
+                            domains={scatterDomains}
+                            onPointHover={setHighlightedPoint}
+                          />
                         </div>
-                        <RelationshipHighchart
-                          xMetric={scatterXMetric}
-                          yMetric={scatterYMetric}
-                          data={scatterData.map((item) => ({
-                            x: item.xValue,
-                            y: item.yValue,
-                            point: item.point,
-                          }))}
-                          domains={scatterDomains}
-                        />
-                      </div>
-                    ) : (
-                      <div className="mt-5 rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-                        There are no matching values for this pair of fields in
-                        the selected segment.
-                      </div>
-                    )}
-                  </section>
-                  <footer className="flex flex-col gap-1 px-1 pb-4 pt-5 text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-                    <span>
-                      {fileName} · {activity.points.length.toLocaleString()}{' '}
-                      points · {formatDistance(activity.totalDistance)}
-                    </span>
-                    <span>
-                      Derived metrics use a rolling five-point window.
-                    </span>
-                  </footer>
+                      ) : (
+                        <div className="mt-5 rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
+                          There are no matching values for this pair of fields
+                          in the selected segment.
+                        </div>
+                      )}
+                    </section>
+                    <footer className="flex flex-col gap-1 px-1 pb-4 pt-5 text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                      <span>
+                        {fileName} · {activity.points.length.toLocaleString()}{' '}
+                        points · {formatDistance(activity.totalDistance)}
+                      </span>
+                      <span>
+                        Derived metrics use a rolling five-point window.
+                      </span>
+                    </footer>
+                  </div>
                 </div>
-              </div>
-            </>
-          ) : (
-            <section className="grid min-h-[calc(100vh-8rem)] place-items-center rounded-md border border-dashed bg-card p-6 text-center">
-              <div className="max-w-md">
-                <span className="mx-auto grid size-10 place-items-center rounded-md border border-border bg-secondary text-foreground">
-                  <Bike className="size-5" />
-                </span>
-                <h1 className="mt-5 text-xl font-semibold tracking-tight">
-                  Import a GPX activity
-                </h1>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Choose a GPX file exported from Strava. Route, climbing,
-                  speed, grade, and heart rate are calculated directly in your
-                  browser.
-                </p>
-                <Button
-                  size="lg"
-                  className="mt-5 h-8 text-xs"
-                  onClick={() => inputRef.current?.click()}
-                >
-                  <Upload /> Choose a GPX file
-                </Button>
-              </div>
-            </section>
-          )}
-        </div>
-      </div>
-      {isDragging ? (
-        <div className="pointer-events-none fixed inset-3 z-[2000] grid place-items-center rounded-md border-2 border-dashed border-primary bg-background/95">
-          <div className="text-center">
-            <Upload className="mx-auto size-8 text-primary" />
-            <p className="mt-3 text-base font-semibold">
-              Drop your GPX to explore
-            </p>
+              </>
+            ) : (
+              <section className="grid min-h-[calc(100vh-8rem)] place-items-center rounded-md border border-dashed bg-card p-6 text-center">
+                <div className="max-w-md">
+                  <span className="mx-auto grid size-10 place-items-center rounded-md border border-border bg-secondary text-foreground">
+                    <Bike className="size-5" />
+                  </span>
+                  <h1 className="mt-5 text-xl font-semibold tracking-tight">
+                    Import a GPX activity
+                  </h1>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    Choose a GPX file exported from Strava. Route, climbing,
+                    speed, grade, and heart rate are calculated directly in your
+                    browser.
+                  </p>
+                  <Button
+                    size="lg"
+                    className="mt-5 h-8 text-xs"
+                    title="Choose a GPX activity file from your device"
+                    onClick={() => inputRef.current?.click()}
+                  >
+                    <Upload /> Choose a GPX file
+                  </Button>
+                </div>
+              </section>
+            )}
           </div>
         </div>
-      ) : null}
-    </main>
+        {isDragging ? (
+          <div className="pointer-events-none fixed inset-3 z-[2000] grid place-items-center rounded-md border-2 border-dashed border-primary bg-background/95">
+            <div className="text-center">
+              <Upload className="mx-auto size-8 text-primary" />
+              <p className="mt-3 text-base font-semibold">
+                Drop your GPX to explore
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </main>
+    </TooltipProvider>
   );
 }
