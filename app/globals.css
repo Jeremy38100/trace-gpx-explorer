@@ -34,6 +34,7 @@
 }
 
 :root {
+  --font-roboto: 'Roboto';
   --background: #fafafa;
   --foreground: #171717;
   --card: #ffffff;
