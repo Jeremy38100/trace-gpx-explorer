@@ -4,12 +4,6 @@ Trace is a browser-based GPX activity explorer for inspecting routes, climbs,
 splits, and effort data. Load a GPX file to view the route on a map and explore
 distance, elevation, speed, vertical speed, grade, and heart-rate charts.
 
-[Live demo](https://trace-gpx-explorer.jeremy-roche5.chatgpt.site)
-
-> [!NOTE]
-> This project was generated primarily with OpenAI Codex using GPT-5.6 Luna
-> at high reasoning effort, with human review and edits.
-
 ![Trace GPX Explorer](./public/og.png)
 
 ## Features

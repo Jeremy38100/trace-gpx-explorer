@@ -8,9 +8,6 @@ const robotoSans = Roboto({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(
-    'https://trace-gpx-explorer.jeremy-roche5.chatgpt.site',
-  ),
   title: 'Trace — GPX Explorer',
   description: 'Explore every climb, split, and effort in your GPX activities.',
   openGraph: {
