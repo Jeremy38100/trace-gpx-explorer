@@ -645,7 +645,7 @@ export function GpxExplorer() {
   }, []);
 
   useEffect(() => {
-    fetch('/sample.gpx.example')
+    fetch(`${import.meta.env.BASE_URL}sample.gpx.example`)
       .then((response) => {
         if (!response.ok) throw new Error('Sample unavailable');
         return response.text();
